@@ -210,9 +210,24 @@ body::after{content:'';position:fixed;inset:0;background:rgba(8,8,10,.65);pointe
 <script>
 var RATE = 13.5;
 var URATE = 90;
-var tgApp = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
+
+// 1. Сначала просто объявляем переменные, но не заполняем их сразу
+var tgApp = null;
 var tgUser = null;
-if (tgApp) { tgApp.expand(); tgUser = (tgApp.initDataUnsafe && tgApp.initDataUnsafe.user) || null; }
+
+// 2. Ждём, пока загрузится страница и все внешние скрипты Телеграма
+window.addEventListener('DOMContentLoaded', function() {
+    if (window.Telegram && window.Telegram.WebApp) {
+        tgApp = window.Telegram.WebApp;
+        tgApp.expand(); // Теперь приложение гарантирован完 развернётся
+        tgUser = (tgApp.initDataUnsafe && tgApp.initDataUnsafe.user) || null;
+        console.log("Telegram WebApp успешно подключен!");
+    } else {
+        console.error("Критическая ошибка: Telegram API не найден.");
+    }
+});
+
+// 3. Сбор параметров из ссылки можно оставить как есть
 var P = new URLSearchParams(window.location.search);
 var BOT_NAME = P.get('bot') || '';
 var MGR_NAME = P.get('mgr') || '';
@@ -350,83 +365,87 @@ function saveOrders(o) { lsSet('cny_orders',o); }
 function nextId() { var n=lsGet('cny_global_cnt',0)+1; lsSet('cny_global_cnt',n); return '#'+String(n).padStart(4,'0'); }
 
 function submitOrder() {
-  // 1. Проверяем, инициализирован ли вообще Telegram WebApp
-  if (typeof tgApp === 'undefined' || !tgApp) {
-    alert("Критическая ошибка: Telegram WebApp API не загружен! Проверь, подключен ли скрипт telegram-web-app.js в <head>");
+  // 1. Проверяем, успел ли инициализироваться tgApp к моменту клика
+  if (!tgApp) {
+    alert("Критическая ошибка: tgApp равен null! Либо страница не загрузилась, либо вы открыли её не через Telegram (или кэш не сбросился).");
     return;
   }
 
-  // 2. Безопасный сбор данных с экрана (даже если переменные FROM/TO не заданы)
-  var fromCur = (typeof FROM !== 'undefined') ? FROM : 'rub';
-  var toCur = (typeof TO !== 'undefined') ? TO : 'cny';
+  if (!FROM || !TO) { 
+    alert("Выберите валюты для обмена!"); 
+    return; 
+  }
   
   var amountInput = document.getElementById('FA');
   var toAmtInput = document.getElementById('TA');
-  
   var amount = amountInput ? parseFloat(amountInput.value) : 0;
   var toAmt = toAmtInput ? parseFloat(toAmtInput.value) : 0;
   
-  if (!amount || amount <= 0) {
-    alert("Пожалуйста, введите корректную сумму отправления.");
-    return;
+  if (!amount || amount <= 0) { 
+    alert("Введите корректную сумму"); 
+    return; 
   }
-
-  // 3. Задаем дефолтные курсы, если глобальные переменные не подтянулись
-  var currentRate = (typeof RATE !== 'undefined') ? RATE : 13.5;
   
-  // Высчитываем курс (er)
-  var er = currentRate; 
+  // 2. Рассчитываем курс с учётом твоих переменных
+  var currentRate = typeof RATE !== 'undefined' ? RATE : 13.5;
+  var currentUsdtRate = typeof URATE !== 'undefined' ? URATE : 90.0;
+  
+  // Проверка лимита (минимум 200 юаней эквивалента)
+  var cnyEq = TO === 'cny' ? toAmt : (FROM === 'cny' ? amount : (FROM === 'rub' ? amount / currentRate : amount * currentUsdtRate / currentRate));
+  if (cnyEq < 200) { 
+    alert("Минимальная сумма обмена — эквивалент 200 ¥"); 
+    return; 
+  }
+  
+  var id = '#' + String(Math.floor(1000 + Math.random() * 9000));
+  
+  // Безопасно вычисляем эффективный курс (если функция effRate существует)
+  var er = currentRate;
   if (typeof effRate === 'function') {
     try {
-      var cnyForRate = fromCur === 'rub' ? toAmt : (fromCur === 'cny' ? amount : 0);
+      var cnyForRate = FROM === 'rub' ? toAmt : (FROM === 'cny' ? amount : 0);
       er = effRate(cnyForRate);
-    } catch(e) {
-      console.log("Ошибка effRate, используем базовый курс", e);
-    }
+    } catch(e) { er = currentRate; }
+  }
+  
+  // 3. Собираем имя пользователя из глобального tgUser, который мы настроили выше
+  var un = 'unknown';
+  if (tgUser) {
+    un = tgUser.username ? '@' + tgUser.username : (tgUser.first_name || 'unknown');
   }
 
-  // 4. Генерируем случайный ID талона
-  var orderId = '#' + String(Math.floor(1000 + Math.random() * 9000));
-
-  // 5. Безопасно собираем имя пользователя
-  var username = 'unknown';
-  if (tgApp.initDataUnsafe && tgApp.initDataUnsafe.user) {
-    var u = tgApp.initDataUnsafe.user;
-    username = u.username ? '@' + u.username : (u.first_name || 'unknown');
-  }
-
-  // 6. Формируем JSON-пакет для твоего бота
-  var dataPayload = {
+  // 4. Формируем JSON точно под твой bokit.py[cite: 6]
+  var orderData = {
     action: 'new_order',
-    order_id: orderId,
-    from: fromCur,
-    to: toCur,
+    order_id: id,
+    from: FROM,
+    to: TO,
     amount: String(amount),
     to_amount: String(toAmt),
     rate: String(er),
-    username: username
+    username: un
   };
 
-  var dataString = JSON.stringify(dataPayload);
+  var dataToSend = JSON.stringify(orderData);
 
-  // 7. СВЯТАЯ СВЯТЫХ: Отправка в Телеграм
+  // 5. Отправка пакета в Telegram
   if (tgApp.sendData) {
     try {
-      // Этот alert покажет тебе, что JS отработал успешно!
-      alert("JS отработал! Отправляем данные в бота:\n" + dataString);
+      // Показываем отладочное окно, чтобы убедиться, что JS дошёл до финиша
+      alert("Данные готовы к отправке в бота:\n" + dataToSend);
       
-      tgApp.sendData(dataString);
+      tgApp.sendData(dataToSend);
       
-      // Даем Телеграму 1 секунду на отправку, затем закрываем окно
-      setTimeout(function() {
-        tgApp.close();
+      // Даём Telegram время обработать отправку, прежде чем закрыть Mini App
+      setTimeout(function() { 
+        tgApp.close(); 
       }, 1000);
       
     } catch(err) {
-      alert("Ошибка при вызове tgApp.sendData: " + err.message);
+      alert("Ошибка при вызове sendData: " + err.message);
     }
   } else {
-    alert("Ошибка: tgApp.sendData недоступен! Вы открыли приложение не через нижнюю кнопку ОБМЕН, либо Telegram блокирует этот метод.");
+    alert("tgApp.sendData недоступен! Вы зашли не через нижнюю кнопку ОБМЕН, либо ссылка закэширована.");
   }
 }
 
