@@ -350,51 +350,85 @@ function saveOrders(o) { lsSet('cny_orders',o); }
 function nextId() { var n=lsGet('cny_global_cnt',0)+1; lsSet('cny_global_cnt',n); return '#'+String(n).padStart(4,'0'); }
 
 function submitOrder() {
-  if (!FROM||!TO) { toast('err','Выберите валюты'); return; }
+  if (!FROM || !TO) { 
+    toast('err', 'Выберите валюты'); 
+    return; 
+  }
+  
   var amount = parseFloat(document.getElementById('FA').value);
-  var toAmt = parseFloat(document.getElementById('TA').value)||0;
-  if (!amount||amount<=0) { toast('err','Введите сумму'); return; }
+  var toAmt = parseFloat(document.getElementById('TA').value) || 0;
   
-  var cnyEq = TO==='cny'?toAmt:(FROM==='cny'?amount:(FROM==='rub'?amount/RATE:amount*URATE/RATE));
-  if (cnyEq<200) { toast('err','Минимум 200 \u00A5'); return; }
+  if (!amount || amount <= 0) { 
+    toast('err', 'Введите сумму'); 
+    return; 
+  }
   
-  var cny = FROM==='rub'?toAmt:(FROM==='cny'?amount:0);
-  var er = effRate(cny);
-  var id = nextId();
-  var un = tgUser?((tgUser.username?'@'+tgUser.username:tgUser.first_name)):'unknown';
-  var uid = tgUser?tgUser.id:5967478728; // Твой ID для тестов
+  // Рассчитываем эквивалент в CNY для лимита в 200 юаней
+  var currentRate = typeof RATE !== 'undefined' ? RATE : 13.5;
+  var currentUsdtRate = typeof URATE !== 'undefined' ? URATE : 90.0;
+  var cnyEq = TO === 'cny' ? toAmt : (FROM === 'cny' ? amount : (FROM === 'rub' ? amount / currentRate : amount * currentUsdtRate / currentRate));
+  
+  if (cnyEq < 200) { 
+    toast('err', 'Минимум 200 \u00A5'); 
+    return; 
+  }
+  
+  // Генерируем ID заявки без вызова несуществующих функций
+  var id = '#' + String(Math.floor(1000 + Math.random() * 9000));
+  
+  var cnyForRate = FROM === 'rub' ? toAmt : (FROM === 'cny' ? amount : 0);
+  var er = effRate(cnyForRate);
+  
+  var un = 'unknown';
+  if (tgApp && tgApp.initDataUnsafe && tgApp.initDataUnsafe.user) {
+    var u = tgApp.initDataUnsafe.user;
+    un = u.username ? '@' + u.username : u.first_name;
+  }
 
   var order = {
     id: id,
     from: FROM,
     to: TO,
     amount: amount,
-    to_amount: toAmt, // Исправлено под формат бота
+    to_amount: toAmt,
     rate: er,
     status: 'pending',
     date: new Date().toLocaleString('ru')
   };
   
-  var list = getOrders(); 
-  list.unshift(order); 
-  saveOrders(list);
+  // Сохраняем в локальную историю браузера (вкладка "Заявки")
+  try {
+    var list = getOrders(); 
+    list.unshift(order); 
+    saveOrders(list);
+  } catch(e) {
+    console.log("Local History Error", e);
+  }
 
   toast('ok', 'Заявка создана!');
 
-  // Отправляем данные в бота
+  // ОТПРАВКА В БОТА С ПРОВЕРКОЙ НА НАЛИЧИЕ МЕТОДА
   if (tgApp && tgApp.sendData) {
-    tgApp.sendData(JSON.stringify({
-      action: 'new_order',
-      order_id: id,
-      from: FROM,
-      to: TO,
-      amount: amount,
-      to_amount: toAmt,
-      rate: er,
-      username: un,
-      uid: uid
-    }));
-    setTimeout(function() { tgApp.close(); }, 1200);
+    try {
+      tgApp.sendData(JSON.stringify({
+        action: 'new_order',
+        order_id: id,
+        from: FROM,
+        to: TO,
+        amount: String(amount),
+        to_amount: String(toAmt),
+        rate: String(er),
+        username: un,
+        uid: tgApp.initDataUnsafe.user ? tgApp.initDataUnsafe.user.id : 5967478728
+      }));
+      
+      // Закрываем окно только после успешной отправки
+      setTimeout(function() { tgApp.close(); }, 1000);
+    } catch(err) {
+      alert("Ошибка отправки в Telegram: " + err.message);
+    }
+  } else {
+    alert("Кнопка нажата в обычном браузере. ID заявки: " + id);
   }
 }
 
