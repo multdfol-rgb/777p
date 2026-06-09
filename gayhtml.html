@@ -350,85 +350,83 @@ function saveOrders(o) { lsSet('cny_orders',o); }
 function nextId() { var n=lsGet('cny_global_cnt',0)+1; lsSet('cny_global_cnt',n); return '#'+String(n).padStart(4,'0'); }
 
 function submitOrder() {
-  if (!FROM || !TO) { 
-    toast('err', 'Выберите валюты'); 
-    return; 
-  }
-  
-  var amount = parseFloat(document.getElementById('FA').value);
-  var toAmt = parseFloat(document.getElementById('TA').value) || 0;
-  
-  if (!amount || amount <= 0) { 
-    toast('err', 'Введите сумму'); 
-    return; 
-  }
-  
-  // Рассчитываем эквивалент в CNY для лимита в 200 юаней
-  var currentRate = typeof RATE !== 'undefined' ? RATE : 13.5;
-  var currentUsdtRate = typeof URATE !== 'undefined' ? URATE : 90.0;
-  var cnyEq = TO === 'cny' ? toAmt : (FROM === 'cny' ? amount : (FROM === 'rub' ? amount / currentRate : amount * currentUsdtRate / currentRate));
-  
-  if (cnyEq < 200) { 
-    toast('err', 'Минимум 200 \u00A5'); 
-    return; 
-  }
-  
-  // Генерируем ID заявки без вызова несуществующих функций
-  var id = '#' + String(Math.floor(1000 + Math.random() * 9000));
-  
-  var cnyForRate = FROM === 'rub' ? toAmt : (FROM === 'cny' ? amount : 0);
-  var er = effRate(cnyForRate);
-  
-  var un = 'unknown';
-  if (tgApp && tgApp.initDataUnsafe && tgApp.initDataUnsafe.user) {
-    var u = tgApp.initDataUnsafe.user;
-    un = u.username ? '@' + u.username : u.first_name;
+  // 1. Проверяем, инициализирован ли вообще Telegram WebApp
+  if (typeof tgApp === 'undefined' || !tgApp) {
+    alert("Критическая ошибка: Telegram WebApp API не загружен! Проверь, подключен ли скрипт telegram-web-app.js в <head>");
+    return;
   }
 
-  var order = {
-    id: id,
-    from: FROM,
-    to: TO,
-    amount: amount,
-    to_amount: toAmt,
-    rate: er,
-    status: 'pending',
-    date: new Date().toLocaleString('ru')
-  };
+  // 2. Безопасный сбор данных с экрана (даже если переменные FROM/TO не заданы)
+  var fromCur = (typeof FROM !== 'undefined') ? FROM : 'rub';
+  var toCur = (typeof TO !== 'undefined') ? TO : 'cny';
   
-  // Сохраняем в локальную историю браузера (вкладка "Заявки")
-  try {
-    var list = getOrders(); 
-    list.unshift(order); 
-    saveOrders(list);
-  } catch(e) {
-    console.log("Local History Error", e);
+  var amountInput = document.getElementById('FA');
+  var toAmtInput = document.getElementById('TA');
+  
+  var amount = amountInput ? parseFloat(amountInput.value) : 0;
+  var toAmt = toAmtInput ? parseFloat(toAmtInput.value) : 0;
+  
+  if (!amount || amount <= 0) {
+    alert("Пожалуйста, введите корректную сумму отправления.");
+    return;
   }
 
-  toast('ok', 'Заявка создана!');
-
-  // ОТПРАВКА В БОТА С ПРОВЕРКОЙ НА НАЛИЧИЕ МЕТОДА
-  if (tgApp && tgApp.sendData) {
+  // 3. Задаем дефолтные курсы, если глобальные переменные не подтянулись
+  var currentRate = (typeof RATE !== 'undefined') ? RATE : 13.5;
+  
+  // Высчитываем курс (er)
+  var er = currentRate; 
+  if (typeof effRate === 'function') {
     try {
-      tgApp.sendData(JSON.stringify({
-        action: 'new_order',
-        order_id: id,
-        from: FROM,
-        to: TO,
-        amount: String(amount),
-        to_amount: String(toAmt),
-        rate: String(er),
-        username: un,
-        uid: tgApp.initDataUnsafe.user ? tgApp.initDataUnsafe.user.id : 5967478728
-      }));
+      var cnyForRate = fromCur === 'rub' ? toAmt : (fromCur === 'cny' ? amount : 0);
+      er = effRate(cnyForRate);
+    } catch(e) {
+      console.log("Ошибка effRate, используем базовый курс", e);
+    }
+  }
+
+  // 4. Генерируем случайный ID талона
+  var orderId = '#' + String(Math.floor(1000 + Math.random() * 9000));
+
+  // 5. Безопасно собираем имя пользователя
+  var username = 'unknown';
+  if (tgApp.initDataUnsafe && tgApp.initDataUnsafe.user) {
+    var u = tgApp.initDataUnsafe.user;
+    username = u.username ? '@' + u.username : (u.first_name || 'unknown');
+  }
+
+  // 6. Формируем JSON-пакет для твоего бота
+  var dataPayload = {
+    action: 'new_order',
+    order_id: orderId,
+    from: fromCur,
+    to: toCur,
+    amount: String(amount),
+    to_amount: String(toAmt),
+    rate: String(er),
+    username: username
+  };
+
+  var dataString = JSON.stringify(dataPayload);
+
+  // 7. СВЯТАЯ СВЯТЫХ: Отправка в Телеграм
+  if (tgApp.sendData) {
+    try {
+      // Этот alert покажет тебе, что JS отработал успешно!
+      alert("JS отработал! Отправляем данные в бота:\n" + dataString);
       
-      // Закрываем окно только после успешной отправки
-      setTimeout(function() { tgApp.close(); }, 1000);
+      tgApp.sendData(dataString);
+      
+      // Даем Телеграму 1 секунду на отправку, затем закрываем окно
+      setTimeout(function() {
+        tgApp.close();
+      }, 1000);
+      
     } catch(err) {
-      alert("Ошибка отправки в Telegram: " + err.message);
+      alert("Ошибка при вызове tgApp.sendData: " + err.message);
     }
   } else {
-    alert("Кнопка нажата в обычном браузере. ID заявки: " + id);
+    alert("Ошибка: tgApp.sendData недоступен! Вы открыли приложение не через нижнюю кнопку ОБМЕН, либо Telegram блокирует этот метод.");
   }
 }
 
